@@ -28,6 +28,9 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
         numpy.ndarray: Normalized 3D vector representing the best direction.
     """
 
+    yaw_counts = 360 // bin_size
+    pitch_counts = 180 // bin_size
+
     # Normalize the target direction.
     normalized_direction = target_direction / np.linalg.norm(target_direction)
 
@@ -36,7 +39,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
     # 1. Histogram Creation
-    histogram = np.zeros((360 // bin_size, 180 // bin_size)) # yaw x pitch
+    histogram = np.zeros((yaw_counts, pitch_counts)) # yaw x pitch
 
     for point in point_cloud:
         #x = point.x
@@ -55,8 +58,8 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
             magnitude = (safety_distance / depth) ** 2
 
             # Bin the obstacle into the histogram
-            yaw_bin = int((math.degrees(yaw) + 180) // bin_size) % (360 // bin_size)
-            pitch_bin = int((math.degrees(pitch) + 90) // bin_size) % (180 // bin_size)
+            yaw_bin = int((math.degrees(yaw) + 180) // bin_size) % yaw_counts
+            pitch_bin = int((math.degrees(pitch) + 90) // bin_size) % pitch_counts
 
             histogram[yaw_bin, pitch_bin] += magnitude
 
@@ -78,22 +81,22 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     yaw_max = 30   # Maximum yaw angle
 
     # Convert yaw range to bins
-    yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
-    yaw_max_bin = int((yaw_max + 180) // bin_size) % (360 // bin_size)
+    yaw_min_bin = int((yaw_min + 180) // bin_size) % yaw_counts
+    yaw_max_bin = int((yaw_max + 180) // bin_size) % yaw_counts
 
     # Define the pitch range (in degrees)
     pitch_min = -30  # Minimum pitch angle
     pitch_max = 30   # Maximum pitch angle
 
     # Convert pitch range to bins
-    pitch_min_bin = int((pitch_min + 90) // bin_size) % (180 // bin_size)
-    pitch_max_bin = int((pitch_max + 90) // bin_size) % (180 // bin_size)
+    pitch_min_bin = int((pitch_min + 90) // bin_size) % pitch_counts
+    pitch_max_bin = int((pitch_max + 90) // bin_size) % pitch_counts
 
     to_inflate = []
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             if histogram[yaw_bin, pitch_bin] < valley_threshold:
-                big = np.max(np.array((histogram[(yaw_bin + 1) % (360 // bin_size), pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % (180 // bin_size)], histogram[yaw_bin, pitch_bin - 1])))
+                big = np.max(np.array((histogram[(yaw_bin + 1) % yaw_counts, pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % pitch_counts], histogram[yaw_bin, pitch_bin - 1])))
                 if big > valley_threshold and histogram[yaw_bin, pitch_bin] / big < 0.1:
                     to_inflate.append((yaw_bin, pitch_bin, big))
     for ff in to_inflate:
@@ -121,7 +124,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     openspace_mask = np.zeros_like(histogram, dtype=bool)
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):
-            big = np.max(np.array((histogram[yaw_bin, pitch_bin], histogram[(yaw_bin + 1) % (360 // bin_size), pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % (180 // bin_size)], histogram[yaw_bin, pitch_bin - 1])))
+            big = np.max(np.array((histogram[yaw_bin, pitch_bin], histogram[(yaw_bin + 1) % yaw_counts, pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % pitch_counts], histogram[yaw_bin, pitch_bin - 1])))
             if big < valley_threshold:
                 openspace_mask[yaw_bin, pitch_bin] = True
 
@@ -130,20 +133,20 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     yaw_max = 20   # Maximum yaw angle
 
     # Convert yaw range to bins
-    yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
-    yaw_max_bin = int((yaw_max + 180) // bin_size) % (360 // bin_size)
+    yaw_min_bin = int((yaw_min + 180) // bin_size) % yaw_counts
+    yaw_max_bin = int((yaw_max + 180) // bin_size) % yaw_counts
 
     # Define the pitch range (in degrees)
     pitch_min = -20  # Minimum pitch angle
     pitch_max = 20   # Maximum pitch angle
 
     # Convert pitch range to bins
-    pitch_min_bin = int((pitch_min + 90) // bin_size) % (180 // bin_size)
-    pitch_max_bin = int((pitch_max + 90) // bin_size) % (180 // bin_size)
+    pitch_min_bin = int((pitch_min + 90) // bin_size) % pitch_counts
+    pitch_max_bin = int((pitch_max + 90) // bin_size) % pitch_counts
 
     # 3. Target Direction Selection (VFH* Modification)
-    yaw_target_bin = int((math.degrees(yaw_target) + 180) // bin_size) % (360 // bin_size)
-    pitch_target_bin = int((math.degrees(pitch_target) + 90) // bin_size) % (180 // bin_size)
+    yaw_target_bin = int((math.degrees(yaw_target) + 180) // bin_size) % yaw_counts
+    pitch_target_bin = int((math.degrees(pitch_target) + 90) // bin_size) % pitch_counts
 
     best_yaw_bin, best_pitch_bin = yaw_target_bin, pitch_target_bin
     min_cost = float('inf')
