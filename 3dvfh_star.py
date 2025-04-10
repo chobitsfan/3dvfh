@@ -38,6 +38,10 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     pitch_target = math.asin(normalized_direction[2])
     yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
+    if prv_yaw is None:
+        prv_yaw = yaw_target
+        prv_pitch = pitch_target
+
     # 1. Histogram Creation
     histogram = np.zeros((yaw_counts, pitch_counts)) # yaw x pitch
 
@@ -96,11 +100,11 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             if histogram[yaw_bin, pitch_bin] < valley_threshold:
-                big = np.max(np.array((histogram[(yaw_bin + 1) % yaw_counts, pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % pitch_counts], histogram[yaw_bin, pitch_bin - 1])))
-                if big > valley_threshold and histogram[yaw_bin, pitch_bin] / big < 0.1:
+                big = np.max(histogram[yaw_bin-1:yaw_bin+2, pitch_bin-1:pitch_bin+2])
+                if big > 1.0 and histogram[yaw_bin, pitch_bin] / big < 0.1:
                     to_inflate.append((yaw_bin, pitch_bin, big))
     for ff in to_inflate:
-        #print("from", histogram[ff[0], ff[1]], "to", ff[2]*0.8)
+        #print("from", histogram[ff[0], ff[1]], "to", ff[2])
         histogram[ff[0], ff[1]] = ff[2]
     #print(len(to_inflate))
 
@@ -124,8 +128,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     openspace_mask = np.zeros_like(histogram, dtype=bool)
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):
-            big = np.max(np.array((histogram[yaw_bin, pitch_bin], histogram[(yaw_bin + 1) % yaw_counts, pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % pitch_counts], histogram[yaw_bin, pitch_bin - 1])))
-            if big < valley_threshold:
+            if np.max(histogram[yaw_bin-1:yaw_bin+2, pitch_bin-1:pitch_bin+2]) < 5:
                 openspace_mask[yaw_bin, pitch_bin] = True
 
     # Define the yaw range (in degrees)
@@ -151,30 +154,38 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     best_yaw_bin, best_pitch_bin = yaw_target_bin, pitch_target_bin
     min_cost = float('inf')
 
+    prv_yaw_bin = int((math.degrees(prv_yaw) + 180) // bin_size) % yaw_counts
+    prv_pitch_bin = int((math.degrees(prv_pitch) + 90) // bin_size) % pitch_counts
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
             cost = histogram[yaw_bin, pitch_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
 
             # Favor previous yaw by adding a penalty for deviation from prv_yaw
-            if prv_yaw is not None:
-                yaw_bin_radians = math.radians(yaw_bin * bin_size - 180)
-                cost += prv_weight * abs(yaw_bin_radians - prv_yaw)  # Adjust the weight (0.1) as needed
-
-            if prv_pitch is not None:
-                pitch_bin_radians = math.radians(pitch_bin * bin_size - 90)
-                cost += prv_weight * abs(pitch_bin_radians - prv_pitch)  # Adjust pitch weight (e.g., 0.1)
+            cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
 
             if openspace_mask[yaw_bin, pitch_bin]:
-                cost = cost * 0.5 # encourage toward open space
+                cost = cost * 0.2
 
             if cost < min_cost:
                 min_cost = cost
                 best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
+    #print(min_cost)
+
+    hist = histogram[20:50, 10:30] * 10
+    img = Image()
+    img.header.stamp = node.get_clock().now().to_msg()
+    img.height = hist.shape[0]
+    img.width = hist.shape[1]
+    img.is_bigendian = 0
+    img.encoding = "mono8"
+    img.step = img.width
+    img.data = hist.astype(np.uint8).ravel()
+    hist_pub.publish(img)
 
     # Convert back to radians.
-    best_yaw = math.radians(best_yaw_bin * bin_size - 180)
-    best_pitch = math.radians(best_pitch_bin * bin_size - 90)
+    best_yaw = math.radians(best_yaw_bin * bin_size - 180 + bin_size / 2)
+    best_pitch = math.radians(best_pitch_bin * bin_size - 90 + bin_size / 2)
 
     return best_yaw, best_pitch
 
@@ -272,6 +283,7 @@ point_in_map.point.z = 1.0
 latest_obs = None
 
 # Create a TF2 buffer and listener
+#my_tf_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=100)
 tf_buffer = Buffer()
 tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
@@ -280,6 +292,7 @@ best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=
 pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
 disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
+hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
 
 prv_yaw = None
 prv_pitch = None
@@ -302,7 +315,7 @@ while rclpy.ok():
             else:
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4, bin_size=5)
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.2, bin_size=5)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
