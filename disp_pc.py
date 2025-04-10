@@ -77,7 +77,7 @@ def disp_callback(img_msg):
     #print(binned.shape, binned.dtype)
     p_3d = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
     header = Header()
-    header.frame_id = "body"
+    header.frame_id = "map"
     header.stamp = node.get_clock().now().to_msg()
     pc_pub.publish(point_cloud2.create_cloud_xyz32(header, p_3d))
 
