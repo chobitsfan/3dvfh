@@ -90,8 +90,8 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     pitch_max_bin = int((pitch_max + 90) // bin_size) % (180 // bin_size)
 
     to_inflate = []
-    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):
-        for pitch_bin in range(pitch_min_bin, pitch_max_bin + 1):  # Restrict pitch_bin to the specified range
+    for yaw_bin in range(yaw_min_bin, yaw_max_bin):
+        for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             if histogram[yaw_bin, pitch_bin] < valley_threshold:
                 big = np.max(np.array((histogram[(yaw_bin + 1) % (360 // bin_size), pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % (180 // bin_size)], histogram[yaw_bin, pitch_bin - 1])))
                 if big > valley_threshold and histogram[yaw_bin, pitch_bin] / big < 0.1:
@@ -119,8 +119,8 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                 valley_mask[yaw_bin, pitch_bin] = True
 
     # Define the yaw range (in degrees)
-    yaw_min = -30  # Minimum yaw angle
-    yaw_max = 30   # Maximum yaw angle
+    yaw_min = -20  # Minimum yaw angle
+    yaw_max = 20   # Maximum yaw angle
 
     # Convert yaw range to bins
     yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
@@ -141,8 +141,8 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     best_yaw_bin, best_pitch_bin = yaw_target_bin, pitch_target_bin
     min_cost = float('inf')
 
-    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):
-        for pitch_bin in range(pitch_min_bin, pitch_max_bin + 1):  # Restrict pitch_bin to the specified range
+    for yaw_bin in range(yaw_min_bin, yaw_max_bin):
+        for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
             cost = histogram[yaw_bin, pitch_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
 
@@ -292,7 +292,7 @@ while rclpy.ok():
             else:
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4, bin_size=5)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
