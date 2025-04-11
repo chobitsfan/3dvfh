@@ -80,16 +80,15 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     pitch_min_bin = int((pitch_min + 90) // bin_size) % pitch_counts
     pitch_max_bin = int((pitch_max + 90) // bin_size) % pitch_counts
 
-    to_inflate = []
-    for yaw_bin in range(yaw_min_bin, yaw_max_bin):
-        for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
-            if histogram[pitch_bin, yaw_bin] < valley_threshold:
-                big = np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2])
-                if big > 1.0 and histogram[pitch_bin, yaw_bin] / big < 0.1:
-                    to_inflate.append((pitch_bin, yaw_bin, big))
-    for ff in to_inflate:
+#    to_inflate = []
+#    for yaw_bin in range(yaw_min_bin, yaw_max_bin):
+#        for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
+#            big = np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2])
+#            if big > 1.0 and histogram[pitch_bin, yaw_bin] / big < 0.1:
+#                to_inflate.append((pitch_bin, yaw_bin, big))
+#    for ff in to_inflate:
         #print("from", histogram[ff[0], ff[1]], "to", ff[2])
-        histogram[ff[0], ff[1]] = ff[2]
+#        histogram[ff[0], ff[1]] = ff[2]
     #print(len(to_inflate))
 
     # 2. Polar Histogram Reduction (open space)
@@ -100,8 +99,8 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                 openspace_mask[pitch_bin, yaw_bin] = True
 
     # Define the yaw range (in degrees)
-    yaw_min = -20  # Minimum yaw angle
-    yaw_max = 20   # Maximum yaw angle
+    yaw_min = -25  # Minimum yaw angle
+    yaw_max = 25   # Maximum yaw angle
 
     # Convert yaw range to bins
     yaw_min_bin = int((yaw_min + 180) // bin_size) % yaw_counts
@@ -126,21 +125,20 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     prv_pitch_bin = int((math.degrees(prv_pitch) + 90) // bin_size) % pitch_counts
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
-            # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
-            cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
-
-            # Favor previous yaw by adding a penalty for deviation from prv_yaw
-            cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
-
             if openspace_mask[pitch_bin, yaw_bin]:
-                cost = cost * 0.2
+                # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
+                cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
 
-            if cost < min_cost:
-                min_cost = cost
-                best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
+                # Favor previous yaw by adding a penalty for deviation from prv_yaw
+                cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
+
+                if cost < min_cost:
+                    min_cost = cost
+                    best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
     #print(min_cost)
 
-    hist = histogram[10:30, 20:50] * 10
+    hist = histogram[10:25, 25:45]*5
+    hist = hist[::-1, ::-1]
     img = Image()
     img.header.stamp = node.get_clock().now().to_msg()
     img.height = hist.shape[0]
