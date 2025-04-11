@@ -43,12 +43,9 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
         prv_pitch = pitch_target
 
     # 1. Histogram Creation
-    histogram = np.zeros((yaw_counts, pitch_counts)) # yaw x pitch
+    histogram = np.zeros((pitch_counts, yaw_counts)) # pitch x yaw
 
     for point in point_cloud:
-        #x = point.x
-        #y = point.y
-        #z = point.z
         x, y, z = point
 
         depth = math.sqrt(x**2 + y**2 + z**2)
@@ -65,20 +62,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
             yaw_bin = int((math.degrees(yaw) + 180) // bin_size) % yaw_counts
             pitch_bin = int((math.degrees(pitch) + 90) // bin_size) % pitch_counts
 
-            histogram[yaw_bin, pitch_bin] += magnitude
-
-            # Add to neighboring
-#            hy = (yaw_bin + 1) % (360 // bin_size)
-#            hp = (pitch_bin + 1) % (180 // bin_size)
-#            sw = magnitude * 0.5
-#            histogram[yaw_bin-1, pitch_bin-1] += sw
-#            histogram[yaw_bin-1, pitch_bin] += sw
-#            histogram[yaw_bin-1, hp] += sw
-#            histogram[yaw_bin, pitch_bin-1] += sw
-#            histogram[yaw_bin, hp] += sw
-#            histogram[hy, pitch_bin-1] += sw
-#            histogram[hy, pitch_bin] += sw
-#            histogram[hy, hp] += sw
+            histogram[pitch_bin, yaw_bin] += magnitude
 
     # Define the yaw range (in degrees)
     yaw_min = -30  # Minimum yaw angle
@@ -99,37 +83,21 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     to_inflate = []
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
-            if histogram[yaw_bin, pitch_bin] < valley_threshold:
-                big = np.max(histogram[yaw_bin-1:yaw_bin+2, pitch_bin-1:pitch_bin+2])
-                if big > 1.0 and histogram[yaw_bin, pitch_bin] / big < 0.1:
-                    to_inflate.append((yaw_bin, pitch_bin, big))
+            if histogram[pitch_bin, yaw_bin] < valley_threshold:
+                big = np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2])
+                if big > 1.0 and histogram[pitch_bin, yaw_bin] / big < 0.1:
+                    to_inflate.append((pitch_bin, yaw_bin, big))
     for ff in to_inflate:
         #print("from", histogram[ff[0], ff[1]], "to", ff[2])
         histogram[ff[0], ff[1]] = ff[2]
     #print(len(to_inflate))
 
-    # 2. Polar Histogram Reduction (Valley Detection)
-    # (Simplified valley detection)
-
-#    valley_mask = np.zeros_like(histogram, dtype=bool)
-#
-#    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):
-#        for pitch_bin in range(pitch_min_bin, pitch_max_bin + 1):
-#            # Check for local minima (valleys).
-#            if (
-#                histogram[yaw_bin, pitch_bin] < valley_threshold and
-#                histogram[yaw_bin, pitch_bin] < histogram[(yaw_bin + 1) % (360 // bin_size), pitch_bin] and
-#                histogram[yaw_bin, pitch_bin] < histogram[yaw_bin - 1, pitch_bin] and
-#                histogram[yaw_bin, pitch_bin] < histogram[yaw_bin, (pitch_bin + 1) % (180 // bin_size)] and
-#                histogram[yaw_bin, pitch_bin] < histogram[yaw_bin, pitch_bin - 1]
-#            ):
-#                valley_mask[yaw_bin, pitch_bin] = True
-
+    # 2. Polar Histogram Reduction (open space)
     openspace_mask = np.zeros_like(histogram, dtype=bool)
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):
-            if np.max(histogram[yaw_bin-1:yaw_bin+2, pitch_bin-1:pitch_bin+2]) < 5:
-                openspace_mask[yaw_bin, pitch_bin] = True
+            if np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2]) < 5:
+                openspace_mask[pitch_bin, yaw_bin] = True
 
     # Define the yaw range (in degrees)
     yaw_min = -20  # Minimum yaw angle
@@ -159,12 +127,12 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
-            cost = histogram[yaw_bin, pitch_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
+            cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
 
             # Favor previous yaw by adding a penalty for deviation from prv_yaw
             cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
 
-            if openspace_mask[yaw_bin, pitch_bin]:
+            if openspace_mask[pitch_bin, yaw_bin]:
                 cost = cost * 0.2
 
             if cost < min_cost:
@@ -172,7 +140,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                 best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
     #print(min_cost)
 
-    hist = histogram[20:50, 10:30] * 10
+    hist = histogram[10:30, 20:50] * 10
     img = Image()
     img.header.stamp = node.get_clock().now().to_msg()
     img.height = hist.shape[0]
@@ -237,7 +205,8 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
     x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
 
     # Avoid division by zero by masking invalid disparity values
-    valid_mask = disparity > 0
+    # ingnore any point 3m away
+    valid_mask = disparity > 90
 
     # Compute depth (Z)
     Z = np.zeros_like(disparity, dtype=np.float32)
@@ -261,7 +230,7 @@ def obs_callback(msg):
 
 def disp_callback(img_msg):
     global latest_obs
-    n=10
+    n=5
     binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
     latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
     header = Header()
