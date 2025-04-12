@@ -10,7 +10,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
-def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, max_range=4.0, safety_distance=1.0, alpha=0.5, valley_threshold=0.1, prv_weight=0.1):
+def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, safety_distance=1.0, alpha=0.5, prv_weight=0.1):
     """
     Implements a simplified 3D Vector Field Histogram* (VFH*) for UAV obstacle avoidance,
     using 3D point cloud and a target direction vector as input, returning a normalized 3D vector.
@@ -45,24 +45,23 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     # 1. Histogram Creation
     histogram = np.zeros((pitch_counts, yaw_counts)) # pitch x yaw
 
-    for point in point_cloud:
-        x, y, z = point
+    # Compute depth (distance) for all points
+    depth = np.sqrt(np.sum(point_cloud**2, axis=1))
 
-        depth = math.sqrt(x**2 + y**2 + z**2)
+    # Convert to spherical coordinates
+    xy2 = np.sum(point_cloud[:, :2]**2, axis=1)  # x^2 + y^2
+    yaw = np.arctan2(point_cloud[:, 1], point_cloud[:, 0])  # atan2(y, x)
+    pitch = np.arctan2(point_cloud[:, 2], np.sqrt(xy2))  # atan2(z, sqrt(x^2 + y^2))
 
-        if 0 < depth < max_range:
-            # Convert to spherical coordinates
-            yaw = math.atan2(y, x)
-            pitch = math.atan2(z, math.sqrt(x**2 + y**2))
+    # Calculate magnitude (influence) of the obstacles
+    magnitude = (safety_distance / depth)**2
 
-            # Calculate magnitude (influence) of the obstacle.
-            magnitude = (safety_distance / depth) ** 2
+    # Bin the obstacles into the histogram
+    yaw_bin = ((np.degrees(yaw) + 180) // bin_size).astype(int) % yaw_counts
+    pitch_bin = ((np.degrees(pitch) + 90) // bin_size).astype(int) % pitch_counts
 
-            # Bin the obstacle into the histogram
-            yaw_bin = int((math.degrees(yaw) + 180) // bin_size) % yaw_counts
-            pitch_bin = int((math.degrees(pitch) + 90) // bin_size) % pitch_counts
-
-            histogram[pitch_bin, yaw_bin] += magnitude
+    # Accumulate magnitudes into the histogram
+    np.add.at(histogram, (pitch_bin, yaw_bin), magnitude)
 
     # Define the yaw range (in degrees)
     yaw_min = -30  # Minimum yaw angle
@@ -137,8 +136,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                     best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
     #print(min_cost)
 
-    hist = histogram[10:25, 25:45]*5
-    hist = hist[::-1, ::-1]
+    hist = histogram[10:25:-1, 25:45:-1]*5
     img = Image()
     img.header.stamp = node.get_clock().now().to_msg()
     img.height = hist.shape[0]
