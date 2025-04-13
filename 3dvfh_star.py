@@ -10,7 +10,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
-def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, safety_distance=1.0, alpha=0.5, prv_weight=0.1):
+def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, safety_distance=1.0, alpha=0.5, prv_weight=0.1, openspace_threshold = 5.0):
     """
     Implements a simplified 3D Vector Field Histogram* (VFH*) for UAV obstacle avoidance,
     using 3D point cloud and a target direction vector as input, returning a normalized 3D vector.
@@ -43,7 +43,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
         prv_pitch = pitch_target
 
     # 1. Histogram Creation
-    histogram = np.zeros((pitch_counts, yaw_counts)) # pitch x yaw
+    histogram = np.zeros((pitch_counts, yaw_counts), dtype=np.float32) # pitch x yaw
 
     # Compute depth (distance) for all points
     depth = np.sqrt(np.sum(point_cloud**2, axis=1))
@@ -94,7 +94,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     openspace_mask = np.zeros_like(histogram, dtype=bool)
     for yaw_bin in range(yaw_min_bin, yaw_max_bin):
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):
-            if np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2]) < 5:
+            if np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2]) < openspace_threshold:
                 openspace_mask[pitch_bin, yaw_bin] = True
 
     # Define the yaw range (in degrees)
@@ -146,6 +146,9 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     img.step = img.width
     img.data = hist.astype(np.uint8).ravel()
     hist_pub.publish(img)
+
+    if math.isinf(min_cost):
+        return None, None
 
     # Convert back to radians.
     best_yaw = math.radians(best_yaw_bin * bin_size - 180 + bin_size / 2)
@@ -284,16 +287,19 @@ while rclpy.ok():
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
-                # Convert spherical coordinates to a 3D vector.
-                x = math.cos(best_pitch) * math.cos(best_yaw)
-                y = math.cos(best_pitch) * math.sin(best_yaw)
-                z = math.sin(best_pitch)
+                if best_yaw is None:
+                    avd_vel = (0, 0, 0)
+                else:
+                    # Convert spherical coordinates to a 3D vector.
+                    x = math.cos(best_pitch) * math.cos(best_yaw)
+                    y = math.cos(best_pitch) * math.sin(best_yaw)
+                    z = math.sin(best_pitch)
 
-                # Normalize the vector.
-                v = np.array([x, y, z])
-                avd_dir = v / np.linalg.norm(v)
+                    # Normalize the vector.
+                    v = np.array([x, y, z])
+                    avd_dir = v / np.linalg.norm(v)
 
-                avd_vel = avd_dir * 0.3
+                    avd_vel = avd_dir * 0.3
                 m = TwistStamped()
                 m.header.frame_id = "body"
                 m.header.stamp = node.get_clock().now().to_msg()
