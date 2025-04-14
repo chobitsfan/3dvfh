@@ -136,7 +136,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                     best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
     #print(min_cost)
 
-    hist = histogram[10:25:-1, 25:45:-1]*5
+    hist = histogram[10:25, 25:45][::-1, ::-1]*5
     img = Image()
     img.header.stamp = node.get_clock().now().to_msg()
     img.height = hist.shape[0]
@@ -208,6 +208,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
     valid_mask = disparity > 90
 
     # Compute depth (Z)
+    # 3bit subpixel disparity = 0.125
     Z = np.zeros_like(disparity, dtype=np.float32)
     Z[valid_mask] = (f * B) / (disparity[valid_mask] * 0.125 / n)
 
