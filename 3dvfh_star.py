@@ -63,6 +63,17 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     # Accumulate magnitudes into the histogram
     np.add.at(histogram, (pitch_bin, yaw_bin), magnitude)
 
+    hist = histogram[10:25, 25:45][::-1, ::-1]*5
+    img = Image()
+    img.header.stamp = node.get_clock().now().to_msg()
+    img.height = hist.shape[0]
+    img.width = hist.shape[1]
+    img.is_bigendian = 0
+    img.encoding = "mono8"
+    img.step = img.width
+    img.data = hist.astype(np.uint8).ravel()
+    hist_pub.publish(img)
+
     # Define the yaw range (in degrees)
     yaw_min = -30  # Minimum yaw angle
     yaw_max = 30   # Maximum yaw angle
@@ -72,8 +83,8 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     yaw_max_bin = int((yaw_max + 180) // bin_size) % yaw_counts
 
     # Define the pitch range (in degrees)
-    pitch_min = -30  # Minimum pitch angle
-    pitch_max = 30   # Maximum pitch angle
+    pitch_min = -25  # Minimum pitch angle
+    pitch_max = 25   # Maximum pitch angle
 
     # Convert pitch range to bins
     pitch_min_bin = int((pitch_min + 90) // bin_size) % pitch_counts
@@ -97,28 +108,13 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
             if np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2]) < openspace_threshold:
                 openspace_mask[pitch_bin, yaw_bin] = True
 
-    # Define the yaw range (in degrees)
-    yaw_min = -25  # Minimum yaw angle
-    yaw_max = 25   # Maximum yaw angle
-
-    # Convert yaw range to bins
-    yaw_min_bin = int((yaw_min + 180) // bin_size) % yaw_counts
-    yaw_max_bin = int((yaw_max + 180) // bin_size) % yaw_counts
-
-    # Define the pitch range (in degrees)
-    pitch_min = -20  # Minimum pitch angle
-    pitch_max = 20   # Maximum pitch angle
-
-    # Convert pitch range to bins
-    pitch_min_bin = int((pitch_min + 90) // bin_size) % pitch_counts
-    pitch_max_bin = int((pitch_max + 90) // bin_size) % pitch_counts
-
     # 3. Target Direction Selection (VFH* Modification)
     yaw_target_bin = int((math.degrees(yaw_target) + 180) // bin_size) % yaw_counts
     pitch_target_bin = int((math.degrees(pitch_target) + 90) // bin_size) % pitch_counts
 
     best_yaw_bin, best_pitch_bin = yaw_target_bin, pitch_target_bin
     min_cost = float('inf')
+    costs = np.full_like(histogram, 255)
 
     prv_yaw_bin = int((math.degrees(prv_yaw) + 180) // bin_size) % yaw_counts
     prv_pitch_bin = int((math.degrees(prv_pitch) + 90) // bin_size) % pitch_counts
@@ -126,26 +122,22 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
         for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
             if openspace_mask[pitch_bin, yaw_bin]:
                 # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
-                cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
+                #cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
 
                 # Favor previous yaw by adding a penalty for deviation from prv_yaw
-                cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
+                #cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
+
+                cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2) + math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
+                costs[pitch_bin, yaw_bin] = cost
 
                 if cost < min_cost:
                     min_cost = cost
                     best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
     #print(min_cost)
 
-    hist = histogram[10:25, 25:45][::-1, ::-1]*5
-    img = Image()
-    img.header.stamp = node.get_clock().now().to_msg()
-    img.height = hist.shape[0]
-    img.width = hist.shape[1]
-    img.is_bigendian = 0
-    img.encoding = "mono8"
-    img.step = img.width
-    img.data = hist.astype(np.uint8).ravel()
-    hist_pub.publish(img)
+    costs = costs[10:25, 25:45][::-1, ::-1]*20
+    img.data = costs.astype(np.uint8).ravel()
+    cost_pub.publish(img)
 
     if math.isinf(min_cost):
         return None, None
@@ -205,7 +197,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
     # Avoid division by zero by masking invalid disparity values
     # ingnore any point 3m away
-    valid_mask = disparity > 90
+    valid_mask = disparity > 100
 
     # Compute depth (Z)
     # 3bit subpixel disparity = 0.125
@@ -262,6 +254,7 @@ pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
 disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
 hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
+cost_pub = node.create_publisher(Image, "cost", best_effort_qos)
 
 prv_yaw = None
 prv_pitch = None
@@ -284,7 +277,7 @@ while rclpy.ok():
             else:
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.2, bin_size=5)
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.0, prv_weight=0.2, bin_size=5)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
