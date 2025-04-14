@@ -55,7 +55,8 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
     x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
 
     # Avoid division by zero by masking invalid disparity values
-    valid_mask = disparity > 0
+    # ingnore any point 3m away
+    valid_mask = disparity > 90
 
     # Compute depth (Z)
     Z = np.zeros_like(disparity, dtype=np.float32)
@@ -72,7 +73,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
 def disp_callback(img_msg):
     #print(type(img_msg.data))
-    n=10
+    n=5
     binned = median_bin_5x5(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
     #print(binned.shape, binned.dtype)
     p_3d = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
@@ -81,15 +82,15 @@ def disp_callback(img_msg):
     header.stamp = node.get_clock().now().to_msg()
     pc_pub.publish(point_cloud2.create_cloud_xyz32(header, p_3d))
 
-    #img = Image()
-    #img.header = header
-    #img.height = 48
-    #img.width = 64
-    #img.is_bigendian = 0
-    #img.encoding = "mono16"
-    #img.step = img.width*2
-    #img.data = binned.ravel().view(np.uint8)
-    #img_pub.publish(img)
+    img = Image()
+    img.header = header
+    img.height = 480 // n
+    img.width = 640 // n
+    img.is_bigendian = 0
+    img.encoding = "mono8"
+    img.step = img.width
+    img.data = binned.astype(np.uint8).ravel()
+    img_pub.publish(img)
 
 rclpy.init()
 node = rclpy.create_node('disp_pc')
