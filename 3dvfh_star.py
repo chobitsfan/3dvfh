@@ -10,7 +10,9 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
-def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, safety_distance=1.0, alpha=0.5, prv_weight=0.1, openspace_threshold = 5.0):
+latest_obs = None
+
+def vfh_star_3d_pointcloud_target_direction(point_cloud, yaw_target, pitch_target, prv_yaw, prv_pitch, bin_size=10, safety_distance=1.0, alpha=1.0, openspace_threshold = 5.0):
     """
     Implements a simplified 3D Vector Field Histogram* (VFH*) for UAV obstacle avoidance,
     using 3D point cloud and a target direction vector as input, returning a normalized 3D vector.
@@ -30,13 +32,6 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
 
     yaw_counts = 360 // bin_size
     pitch_counts = 180 // bin_size
-
-    # Normalize the target direction.
-    normalized_direction = target_direction / np.linalg.norm(target_direction)
-
-    # Convert normalized direction to yaw and pitch.
-    pitch_target = math.asin(normalized_direction[2])
-    yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
     if prv_yaw is None:
         prv_yaw = yaw_target
@@ -62,17 +57,6 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
 
     # Accumulate magnitudes into the histogram
     np.add.at(histogram, (pitch_bin, yaw_bin), magnitude)
-
-    hist = histogram[10:25, 25:45][::-1, ::-1]*5
-    img = Image()
-    img.header.stamp = node.get_clock().now().to_msg()
-    img.height = hist.shape[0]
-    img.width = hist.shape[1]
-    img.is_bigendian = 0
-    img.encoding = "mono8"
-    img.step = img.width
-    img.data = hist.astype(np.uint8).ravel()
-    hist_pub.publish(img)
 
     # Define the yaw range (in degrees)
     yaw_min = -30  # Minimum yaw angle
@@ -127,7 +111,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                 # Favor previous yaw by adding a penalty for deviation from prv_yaw
                 #cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
 
-                cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2) + math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
+                cost = histogram[pitch_bin, yaw_bin] + alpha * ((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2) + ((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
                 costs[pitch_bin, yaw_bin] = cost
 
                 if cost < min_cost:
@@ -135,18 +119,14 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                     best_yaw_bin, best_pitch_bin = yaw_bin, pitch_bin
     #print(min_cost)
 
-    costs = costs[10:25, 25:45][::-1, ::-1]*20
-    img.data = costs.astype(np.uint8).ravel()
-    cost_pub.publish(img)
-
     if math.isinf(min_cost):
-        return None, None
+        return None, None, histogram, costs
 
     # Convert back to radians.
     best_yaw = math.radians(best_yaw_bin * bin_size - 180 + bin_size / 2)
     best_pitch = math.radians(best_pitch_bin * bin_size - 90 + bin_size / 2)
 
-    return best_yaw, best_pitch
+    return best_yaw, best_pitch, histogram, costs
 
 def median_bin(image, n):
     """
@@ -213,99 +193,115 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
     return points_3d
 
-def obs_callback(msg):
-    #print(type(msg.points))
-    #for p in msg.points:
-    #    print(p.x, p.y, p.z)
-    global latest_obs
-    latest_obs = msg.points
-
 def disp_callback(img_msg):
     global latest_obs
     n=5
     binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
     latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
-    header = Header()
-    header.frame_id = "body"
-    header.stamp = node.get_clock().now().to_msg()
-    pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
 
-rclpy.init()
-node = rclpy.create_node('obs_avd')
+def main():
+    global latest_obs
+    rclpy.init()
+    node = rclpy.create_node('obs_avd')
 
-# Define a point in the "map" frame
-point_in_map = PointStamped()
-point_in_map.header.frame_id = "map"
-point_in_map.header.stamp = node.get_clock().now().to_msg()
-point_in_map.point.x = 5.0
-point_in_map.point.y = 0.0
-point_in_map.point.z = 1.0
+    # Define a point in the "map" frame
+    point_in_map = PointStamped()
+    point_in_map.header.frame_id = "map"
+    point_in_map.header.stamp = node.get_clock().now().to_msg()
+    point_in_map.point.x = 5.0
+    point_in_map.point.y = 0.0
+    point_in_map.point.z = 1.0
 
-latest_obs = None
+    # Create a TF2 buffer and listener
+    tf_buffer = Buffer()
+    tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
-# Create a TF2 buffer and listener
-#my_tf_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=100)
-tf_buffer = Buffer()
-tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
+    best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.VOLATILE)
+    pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
+    avd_pub = node.create_publisher(TwistStamped, "avoid_direction", best_effort_qos)
+    hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
+    cost_pub = node.create_publisher(Image, "cost", best_effort_qos)
+    disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
 
-best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.VOLATILE)
-#obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
-pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
-disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
-avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
-hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
-cost_pub = node.create_publisher(Image, "cost", best_effort_qos)
+    prv_yaw = None
+    prv_pitch = None
 
-prv_yaw = None
-prv_pitch = None
-
-while rclpy.ok():
-    try:
-        rclpy.spin_once(node)
-        if latest_obs is not None:
-            try:
-                # Lookup the transform from "map" to "body"
-                transform = tf_buffer.lookup_transform(
-                    "body",  # Target frame
-                    "map",   # Source frame
-                    rclpy.time.Time(),  # Use the latest available transform
-                    timeout=rclpy.duration.Duration(seconds=0.0)
-                )
-            except Exception as e:
-                #print(e)
-                pass
-            else:
-                # Transform the point
-                point_in_body = do_transform_point(point_in_map, transform)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.0, prv_weight=0.2, bin_size=5)
-                prv_yaw = best_yaw
-                prv_pitch = best_pitch
-
-                if best_yaw is None:
-                    avd_vel = (0, 0, 0)
+    while rclpy.ok():
+        try:
+            rclpy.spin_once(node)
+            if latest_obs is not None:
+                header = Header()
+                header.frame_id = "body"
+                header.stamp = node.get_clock().now().to_msg()
+                pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
+                try:
+                    # Lookup the transform from "map" to "body"
+                    transform = tf_buffer.lookup_transform(
+                        "body",  # Target frame
+                        "map",   # Source frame
+                        rclpy.time.Time(),  # Use the latest available transform
+                        timeout=rclpy.duration.Duration(seconds=0.0)
+                    )
+                except Exception as e:
+                    #print(e)
+                    pass
                 else:
-                    # Convert spherical coordinates to a 3D vector.
-                    x = math.cos(best_pitch) * math.cos(best_yaw)
-                    y = math.cos(best_pitch) * math.sin(best_yaw)
-                    z = math.sin(best_pitch)
+                    # Transform the point
+                    point_in_body = do_transform_point(point_in_map, transform)
 
-                    # Normalize the vector.
-                    v = np.array([x, y, z])
-                    avd_dir = v / np.linalg.norm(v)
+                    target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
+                    # Normalize the target direction.
+                    normalized_direction = target_direction / np.linalg.norm(target_direction)
 
-                    avd_vel = avd_dir * 0.3
-                m = TwistStamped()
-                m.header.frame_id = "body"
-                m.header.stamp = node.get_clock().now().to_msg()
-                m.twist.linear.x = avd_vel[0]
-                m.twist.linear.y = avd_vel[1]
-                m.twist.linear.z = avd_vel[2]
-                avd_pub.publish(m)
+                    # Convert normalized direction to yaw and pitch.
+                    pitch_target = math.asin(normalized_direction[2])
+                    yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                latest_obs = None
-    except KeyboardInterrupt:
-        break
-rclpy.try_shutdown()
-print("bye")
+                    best_yaw, best_pitch, histogram, costs = vfh_star_3d_pointcloud_target_direction(latest_obs, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.1, bin_size=5)
+                    prv_yaw = best_yaw
+                    prv_pitch = best_pitch
+
+                    hist = histogram[10:25, 25:45][::-1, ::-1]*5
+                    img = Image()
+                    img.header.stamp = node.get_clock().now().to_msg()
+                    img.height = hist.shape[0]
+                    img.width = hist.shape[1]
+                    img.is_bigendian = 0
+                    img.encoding = "mono8"
+                    img.step = img.width
+                    img.data = hist.astype(np.uint8).ravel()
+                    hist_pub.publish(img)
+                    costs = costs[10:25, 25:45][::-1, ::-1]*10
+                    img.data = costs.astype(np.uint8).ravel()
+                    cost_pub.publish(img)
 
 
+                    if best_yaw is None:
+                        avd_vel = (0, 0, 0)
+                    else:
+                        # Convert spherical coordinates to a 3D vector.
+                        x = math.cos(best_pitch) * math.cos(best_yaw)
+                        y = math.cos(best_pitch) * math.sin(best_yaw)
+                        z = math.sin(best_pitch)
+
+                        # Normalize the vector.
+                        #v = np.array([x, y, z])
+                        #avd_dir = v / np.linalg.norm(v)
+
+                        avd_vel = np.array([x, y, z]) * 0.3
+                    m = TwistStamped()
+                    m.header.frame_id = "body"
+                    m.header.stamp = node.get_clock().now().to_msg()
+                    m.twist.linear.x = avd_vel[0]
+                    m.twist.linear.y = avd_vel[1]
+                    m.twist.linear.z = avd_vel[2]
+                    avd_pub.publish(m)
+
+                    latest_obs = None
+        except KeyboardInterrupt:
+            break
+    rclpy.try_shutdown()
+    print("bye")
+
+if __name__ == '__main__':
+    main()
