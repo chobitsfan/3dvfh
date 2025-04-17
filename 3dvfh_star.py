@@ -19,7 +19,7 @@ class VFH3D:
         yaw_counts = 360 // bin_size
         pitch_counts = 180 // bin_size
         self.histogram = np.zeros((pitch_counts, yaw_counts), dtype=np.float32) # pitch x yaw
-        self.occupied_memory = np.zeros_like(self.histogram, dtype=np.int32)
+        self.occupied_memory = np.zeros_like(self.histogram, dtype=np.int8)
         self.costs = np.zeros_like(self.histogram, dtype=np.float32)
 
     def target_direction(self, point_cloud, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.1, occupied_threshold=10.0):
@@ -85,11 +85,6 @@ class VFH3D:
         pitch_max_bin = int((pitch_max + 90) // self.bin_size) % pitch_counts
 
         # 2. Polar Histogram Reduction (occupied)
-        occupied = self.histogram > occupied_threshold
-        #print(self.histogram[occupied].size)
-        #mm = np.max(self.histogram[occupied], initial=10)
-        #nn = np.min(self.histogram[occupied], initial=10)
-        #print(mm, nn)
 #        to_inflates = []
 #        for yaw_bin in range(yaw_min_bin, yaw_max_bin):
 #            for pitch_bin in range(pitch_min_bin, pitch_max_bin):
@@ -97,9 +92,11 @@ class VFH3D:
 #                    to_inflates.append((pitch_bin, yaw_bin))
 #        for to_inflate in to_inflates:
 #            occupied[to_inflate[0], to_inflate[1]] = True
-        occupied = ndimage.maximum_filter(occupied, size=3)
+        #occupied = self.histogram > occupied_threshold
+        #occupied = ndimage.maximum_filter(occupied, size=3)
+        self.histogram = ndimage.maximum_filter(self.histogram, size=3)
 
-        self.occupied_memory = np.where(occupied, 10, self.occupied_memory - 1)
+        self.occupied_memory = np.where(self.histogram > occupied_threshold, 10, self.occupied_memory - 1)
         self.occupied_memory = np.maximum(self.occupied_memory, 0)
 
         # 3. Target Direction Selection (VFH* Modification)
@@ -123,6 +120,9 @@ class VFH3D:
                     #cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
 
                     cost = self.histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2) + math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
+                    if self.histogram[pitch_bin-1, yaw_bin] < 5 and self.histogram[pitch_bin+1, yaw_bin] < 5 or self.histogram[pitch_bin, yaw_bin-1] < 5 and self.histogram[pitch_bin, yaw_bin+1] < 5:
+                        cost = cost * 0.5
+
                     self.costs[pitch_bin, yaw_bin] = cost
 
                     if cost < min_cost:
@@ -300,7 +300,7 @@ def main():
                         #v = np.array([x, y, z])
                         #avd_dir = v / np.linalg.norm(v)
 
-                        avd_vel = np.array([x, y, z]) * 0.3
+                        avd_vel = np.array([x, y, z]) * 0.5
                     m = TwistStamped()
                     m.header.frame_id = "body"
                     m.header.stamp = node.get_clock().now().to_msg()
