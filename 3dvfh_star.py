@@ -9,6 +9,7 @@ from tf2_geometry_msgs import do_transform_point
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
+from scipy import ndimage
 
 latest_obs = None
 
@@ -83,32 +84,22 @@ class VFH3D:
         pitch_min_bin = int((pitch_min + 90) // self.bin_size) % pitch_counts
         pitch_max_bin = int((pitch_max + 90) // self.bin_size) % pitch_counts
 
-    #    to_inflate = []
-    #    for yaw_bin in range(yaw_min_bin, yaw_max_bin):
-    #        for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
-    #            big = np.max(histogram[pitch_bin-1:pitch_bin+2, yaw_bin-1:yaw_bin+2])
-    #            if big > 1.0 and histogram[pitch_bin, yaw_bin] / big < 0.1:
-    #                to_inflate.append((pitch_bin, yaw_bin, big))
-    #    for ff in to_inflate:
-            #print("from", histogram[ff[0], ff[1]], "to", ff[2])
-    #        histogram[ff[0], ff[1]] = ff[2]
-        #print(len(to_inflate))
-
         # 2. Polar Histogram Reduction (occupied)
         occupied = self.histogram > occupied_threshold
         #print(self.histogram[occupied].size)
         #mm = np.max(self.histogram[occupied], initial=10)
         #nn = np.min(self.histogram[occupied], initial=10)
         #print(mm, nn)
-        to_inflates = []
-        for yaw_bin in range(yaw_min_bin, yaw_max_bin):
-            for pitch_bin in range(pitch_min_bin, pitch_max_bin):
-                if occupied[pitch_bin-1, yaw_bin] or occupied[pitch_bin+1, yaw_bin] or occupied[pitch_bin, yaw_bin-1] or occupied[pitch_bin, yaw_bin+1]:
-                    to_inflates.append((pitch_bin, yaw_bin))
-        for to_inflate in to_inflates:
-            occupied[to_inflate[0], to_inflate[1]] = True
+#        to_inflates = []
+#        for yaw_bin in range(yaw_min_bin, yaw_max_bin):
+#            for pitch_bin in range(pitch_min_bin, pitch_max_bin):
+#                if occupied[pitch_bin-1, yaw_bin] or occupied[pitch_bin+1, yaw_bin] or occupied[pitch_bin, yaw_bin-1] or occupied[pitch_bin, yaw_bin+1]:
+#                    to_inflates.append((pitch_bin, yaw_bin))
+#        for to_inflate in to_inflates:
+#            occupied[to_inflate[0], to_inflate[1]] = True
+        occupied = ndimage.maximum_filter(occupied, size=3)
 
-        self.occupied_memory = np.where(occupied, 5, self.occupied_memory - 1)
+        self.occupied_memory = np.where(occupied, 10, self.occupied_memory - 1)
         self.occupied_memory = np.maximum(self.occupied_memory, 0)
 
         # 3. Target Direction Selection (VFH* Modification)
