@@ -2,16 +2,17 @@ import rclpy, math
 import numpy as np
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, Image, PointCloud
-from geometry_msgs.msg import TwistStamped, PointStamped
+from geometry_msgs.msg import TwistStamped, PointStamped, Vector3Stamped
 from nav_msgs.msg import Odometry
 from tf2_ros import Buffer, TransformListener
-from tf2_geometry_msgs import do_transform_point
+from tf2_geometry_msgs import do_transform_point, do_transform_vector3
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from scipy import ndimage
 
 latest_obs = None
+tgt_p_body = None
 
 class VFH3D:
     def __init__(self, bin_size):
@@ -210,18 +211,17 @@ def disp_callback(img_msg):
     binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
     latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
 
+def tgt_point_callback(p_msg):
+    global tgt_p_body
+    tgt_p_body = p_msg
+
 def main():
     global latest_obs
+    global tgt_p_body
     rclpy.init()
     node = rclpy.create_node('obs_avd')
 
-    # Define a point in the "map" frame
-    point_in_map = PointStamped()
-    point_in_map.header.frame_id = "map"
-    point_in_map.header.stamp = node.get_clock().now().to_msg()
-    point_in_map.point.x = 5.0
-    point_in_map.point.y = 0.0
-    point_in_map.point.z = 1.0
+    tgt_p_map = None
 
     # Create a TF2 buffer and listener
     tf_buffer = Buffer()
@@ -233,6 +233,7 @@ def main():
     hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
     cost_pub = node.create_publisher(Image, "cost", best_effort_qos)
     disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
+    tgt_point_sub = node.create_subscription(PointStamped, "target_point", tgt_point_callback, qos_profile=best_effort_qos)
 
     prv_yaw = None
     prv_pitch = None
@@ -246,70 +247,87 @@ def main():
                 header.frame_id = "body"
                 header.stamp = node.get_clock().now().to_msg()
                 pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
-                try:
-                    # Lookup the transform from "map" to "body"
-                    transform = tf_buffer.lookup_transform(
-                        "body",  # Target frame
-                        "map",   # Source frame
-                        rclpy.time.Time(),  # Use the latest available transform
-                        timeout=rclpy.duration.Duration(seconds=0.0)
-                    )
-                except Exception as e:
-                    #print(e)
-                    pass
-                else:
-                    # Transform the point
-                    point_in_body = do_transform_point(point_in_map, transform)
-
-                    target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
-                    # Normalize the target direction.
-                    normalized_direction = target_direction / np.linalg.norm(target_direction)
-
-                    # Convert normalized direction to yaw and pitch.
-                    pitch_target = math.asin(normalized_direction[2])
-                    yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
-
-                    best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.1)
-                    prv_yaw = best_yaw
-                    prv_pitch = best_pitch
-
-                    hist = vfh3d.histogram[10:25, 25:45][::-1, ::-1]*5
-                    img = Image()
-                    img.header.stamp = node.get_clock().now().to_msg()
-                    img.height = hist.shape[0]
-                    img.width = hist.shape[1]
-                    img.is_bigendian = 0
-                    img.encoding = "mono8"
-                    img.step = img.width
-                    img.data = hist.astype(np.uint8).ravel()
-                    hist_pub.publish(img)
-                    costs = vfh3d.costs[10:25, 25:45][::-1, ::-1]*10
-                    img.data = costs.astype(np.uint8).ravel()
-                    cost_pub.publish(img)
-
-
-                    if best_yaw is None:
-                        avd_vel = (0, 0, 0)
+                if tgt_p_body is not None:
+                    try:
+                        transform = tf_buffer.lookup_transform(
+                            "map",  # Target frame
+                            "body",   # Source frame
+                            rclpy.time.Time(),  # Use the latest available transform
+                            timeout=rclpy.duration.Duration(seconds=0.0)
+                        )
+                    except Exception as e:
+                        pass
                     else:
-                        # Convert spherical coordinates to a 3D vector.
-                        x = math.cos(best_pitch) * math.cos(best_yaw)
-                        y = math.cos(best_pitch) * math.sin(best_yaw)
-                        z = math.sin(best_pitch)
+                        tgt_p_map = do_transform_point(tgt_p_body, transform)
+                        tgt_p_body = None
+                if tgt_p_map is not None:
+                    try:
+                        # Lookup the transform from "map" to "body"
+                        transform = tf_buffer.lookup_transform(
+                            "body",  # Target frame
+                            "map",   # Source frame
+                            rclpy.time.Time(),  # Use the latest available transform
+                            timeout=rclpy.duration.Duration(seconds=0.0)
+                        )
+                    except Exception as e:
+                        #print(e)
+                        pass
+                    else:
+                        # Transform the point
+                        point_in_body = do_transform_point(tgt_p_map, transform)
 
-                        # Normalize the vector.
-                        #v = np.array([x, y, z])
-                        #avd_dir = v / np.linalg.norm(v)
+                        target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
+                        # Normalize the target direction.
+                        normalized_direction = target_direction / np.linalg.norm(target_direction)
 
-                        avd_vel = np.array([x, y, z]) * 0.5
-                    m = TwistStamped()
-                    m.header.frame_id = "body"
-                    m.header.stamp = node.get_clock().now().to_msg()
-                    m.twist.linear.x = avd_vel[0]
-                    m.twist.linear.y = avd_vel[1]
-                    m.twist.linear.z = avd_vel[2]
-                    avd_pub.publish(m)
+                        # Convert normalized direction to yaw and pitch.
+                        pitch_target = math.asin(normalized_direction[2])
+                        yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                    latest_obs = None
+                        #v_in_body = do_transform_vector3(v_in_map, transform)
+                        #pitch_target = math.asin(v_in_body.vector.z)
+                        #yaw_target = math.atan2(v_in_body.vector.y, v_in_body.vector.x)
+
+                        best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.1)
+                        prv_yaw = best_yaw
+                        prv_pitch = best_pitch
+
+                        hist = vfh3d.histogram[10:25, 25:45][::-1, ::-1]*5
+                        img = Image()
+                        img.header.stamp = node.get_clock().now().to_msg()
+                        img.height = hist.shape[0]
+                        img.width = hist.shape[1]
+                        img.is_bigendian = 0
+                        img.encoding = "mono8"
+                        img.step = img.width
+                        img.data = hist.astype(np.uint8).ravel()
+                        hist_pub.publish(img)
+                        costs = vfh3d.costs[10:25, 25:45][::-1, ::-1]*10
+                        img.data = costs.astype(np.uint8).ravel()
+                        cost_pub.publish(img)
+
+                        if best_yaw is None:
+                            avd_vel = (0, 0, 0)
+                        else:
+                            # Convert spherical coordinates to a 3D vector.
+                            x = math.cos(best_pitch) * math.cos(best_yaw)
+                            y = math.cos(best_pitch) * math.sin(best_yaw)
+                            z = math.sin(best_pitch)
+
+                            # Normalize the vector.
+                            #v = np.array([x, y, z])
+                            #avd_dir = v / np.linalg.norm(v)
+
+                            avd_vel = np.array([x, y, z])
+                        m = TwistStamped()
+                        m.header.frame_id = "body"
+                        m.header.stamp = node.get_clock().now().to_msg()
+                        m.twist.linear.x = avd_vel[0]
+                        m.twist.linear.y = avd_vel[1]
+                        m.twist.linear.z = avd_vel[2]
+                        avd_pub.publish(m)
+
+                        latest_obs = None
         except KeyboardInterrupt:
             break
     rclpy.try_shutdown()
