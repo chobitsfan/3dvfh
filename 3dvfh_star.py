@@ -288,7 +288,7 @@ def main():
                         #pitch_target = math.asin(v_in_body.vector.z)
                         #yaw_target = math.atan2(v_in_body.vector.y, v_in_body.vector.x)
 
-                        best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.1)
+                        best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.2, alpha=1.05)
                         prv_yaw = best_yaw
                         prv_pitch = best_pitch
 
