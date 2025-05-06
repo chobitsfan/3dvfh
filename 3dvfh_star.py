@@ -22,8 +22,16 @@ class VFH3D:
         self.histogram = np.zeros((pitch_counts, yaw_counts), dtype=np.float32) # pitch x yaw
         self.occupied_memory = np.zeros_like(self.histogram, dtype=np.int8)
         self.costs = np.zeros_like(self.histogram, dtype=np.float32)
+        self.prv_yaw = None
+        self.prv_pitch = None
 
-    def target_direction(self, point_cloud, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.0, alpha=1.1, occupied_threshold=10.0):
+    def reset(self):
+        self.histogram[:] = 0
+        self.occupied_memory[:] = 0
+        self.prv_yaw = None
+        self.prv_pitch = None
+
+    def target_direction(self, point_cloud, yaw_target, pitch_target, safety_distance=1.0, alpha=1.1, occupied_threshold=10.0):
         """
         Implements a simplified 3D Vector Field Histogram* (VFH*) for UAV obstacle avoidance,
         using 3D point cloud and a target direction vector as input, returning a normalized 3D vector.
@@ -44,9 +52,9 @@ class VFH3D:
         yaw_counts = 360 // self.bin_size
         pitch_counts = 180 // self.bin_size
 
-        if prv_yaw is None:
-            prv_yaw = yaw_target
-            prv_pitch = pitch_target
+        if self.prv_yaw is None:
+            self.prv_yaw = yaw_target
+            self.prv_pitch = pitch_target
 
         # 1. Histogram Creation
         self.histogram[:] = 0
@@ -108,8 +116,8 @@ class VFH3D:
         min_cost = float('inf')
         self.costs[:] = 255
 
-        prv_yaw_bin = int((math.degrees(prv_yaw) + 180) // self.bin_size) % yaw_counts
-        prv_pitch_bin = int((math.degrees(prv_pitch) + 90) // self.bin_size) % pitch_counts
+        prv_yaw_bin = int((math.degrees(self.prv_yaw) + 180) // self.bin_size) % yaw_counts
+        prv_pitch_bin = int((math.degrees(self.prv_pitch) + 90) // self.bin_size) % pitch_counts
         for yaw_bin in range(yaw_min_bin, yaw_max_bin):
             for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
                 if self.occupied_memory[pitch_bin, yaw_bin] < 1:
@@ -137,6 +145,9 @@ class VFH3D:
         # Convert back to radians.
         best_yaw = math.radians(best_yaw_bin * self.bin_size - 180 + self.bin_size / 2)
         best_pitch = math.radians(best_pitch_bin * self.bin_size - 90 + self.bin_size / 2)
+
+        self.prv_yaw = best_yaw
+        self.prv_pitch = best_pitch
 
         return best_yaw, best_pitch
 
@@ -235,8 +246,6 @@ def main():
     disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
     tgt_point_sub = node.create_subscription(PointStamped, "target_point", tgt_point_callback, qos_profile=best_effort_qos)
 
-    prv_yaw = None
-    prv_pitch = None
     vfh3d = VFH3D(5)
 
     while rclpy.ok():
@@ -248,18 +257,23 @@ def main():
                 header.stamp = node.get_clock().now().to_msg()
                 pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
                 if tgt_p_body is not None:
-                    try:
-                        transform = tf_buffer.lookup_transform(
-                            "map",  # Target frame
-                            "body",   # Source frame
-                            rclpy.time.Time(),  # Use the latest available transform
-                            timeout=rclpy.duration.Duration(seconds=0.0)
-                        )
-                    except Exception as e:
-                        pass
-                    else:
-                        tgt_p_map = do_transform_point(tgt_p_body, transform)
+                    if tgt_p_body.point.x == 0 and tgt_p_body.point.y == 0 and tgt_p_body.point.z == 0:
+                        tgt_p_map = None
                         tgt_p_body = None
+                        vfh3d.reset()
+                    else:
+                        try:
+                            transform = tf_buffer.lookup_transform(
+                                "map",  # Target frame
+                                "body",   # Source frame
+                                rclpy.time.Time(),  # Use the latest available transform
+                                timeout=rclpy.duration.Duration(seconds=0.0)
+                            )
+                        except Exception as e:
+                            pass
+                        else:
+                            tgt_p_map = do_transform_point(tgt_p_body, transform)
+                            tgt_p_body = None
                 if tgt_p_map is not None:
                     try:
                         # Lookup the transform from "map" to "body"
@@ -284,13 +298,7 @@ def main():
                         pitch_target = math.asin(normalized_direction[2])
                         yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                        #v_in_body = do_transform_vector3(v_in_map, transform)
-                        #pitch_target = math.asin(v_in_body.vector.z)
-                        #yaw_target = math.atan2(v_in_body.vector.y, v_in_body.vector.x)
-
-                        best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, prv_yaw, prv_pitch, safety_distance=1.2, alpha=1.05)
-                        prv_yaw = best_yaw
-                        prv_pitch = best_pitch
+                        best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.2, alpha=1.05)
 
                         hist = vfh3d.histogram[10:25, 25:45][::-1, ::-1]*5
                         img = Image()
