@@ -25,6 +25,22 @@ class VFH3D:
         self.prv_yaw = None
         self.prv_pitch = None
 
+        # Define the yaw range (in degrees)
+        yaw_min = -30  # Minimum yaw angle
+        yaw_max = 30   # Maximum yaw angle
+
+        # Convert yaw range to bins
+        self.yaw_min_bin = int((yaw_min + 180) // self.bin_size) % yaw_counts
+        self.yaw_max_bin = int((yaw_max + 180) // self.bin_size) % yaw_counts
+
+        # Define the pitch range (in degrees)
+        pitch_min = -25  # Minimum pitch angle
+        pitch_max = 25   # Maximum pitch angle
+
+        # Convert pitch range to bins
+        self.pitch_min_bin = int((pitch_min + 90) // self.bin_size) % pitch_counts
+        self.pitch_max_bin = int((pitch_max + 90) // self.bin_size) % pitch_counts
+
     def reset(self):
         self.histogram[:] = 0
         self.occupied_memory[:] = 0
@@ -77,22 +93,10 @@ class VFH3D:
         # Accumulate magnitudes into the histogram
         np.add.at(self.histogram, (pitch_bin, yaw_bin), magnitude)
 
-        # Define the yaw range (in degrees)
-        yaw_min = -30  # Minimum yaw angle
-        yaw_max = 30   # Maximum yaw angle
-
-        # Convert yaw range to bins
-        yaw_min_bin = int((yaw_min + 180) // self.bin_size) % yaw_counts
-        yaw_max_bin = int((yaw_max + 180) // self.bin_size) % yaw_counts
-
-        # Define the pitch range (in degrees)
-        pitch_min = -25  # Minimum pitch angle
-        pitch_max = 25   # Maximum pitch angle
-
-        # Convert pitch range to bins
-        pitch_min_bin = int((pitch_min + 90) // self.bin_size) % pitch_counts
-        pitch_max_bin = int((pitch_max + 90) // self.bin_size) % pitch_counts
-
+        evade = False
+        #print(self.histogram[17:19,34:38])
+        if (np.max(self.histogram[17:19,34:38]) > 200):
+            evade = True
         # 2. Polar Histogram Reduction (occupied)
 #        to_inflates = []
 #        for yaw_bin in range(yaw_min_bin, yaw_max_bin):
@@ -118,8 +122,8 @@ class VFH3D:
 
         prv_yaw_bin = int((math.degrees(self.prv_yaw) + 180) // self.bin_size) % yaw_counts
         prv_pitch_bin = int((math.degrees(self.prv_pitch) + 90) // self.bin_size) % pitch_counts
-        for yaw_bin in range(yaw_min_bin, yaw_max_bin):
-            for pitch_bin in range(pitch_min_bin, pitch_max_bin):  # Restrict pitch_bin to the specified range
+        for yaw_bin in range(self.yaw_min_bin, self.yaw_max_bin+1):
+            for pitch_bin in range(self.pitch_min_bin, self.pitch_max_bin+1):  # Restrict pitch_bin to the specified range
                 if self.occupied_memory[pitch_bin, yaw_bin] < 1:
                 #if not occupied[pitch_bin, yaw_bin]:
                     # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
@@ -149,7 +153,7 @@ class VFH3D:
         self.prv_yaw = best_yaw
         self.prv_pitch = best_pitch
 
-        return best_yaw, best_pitch
+        return best_yaw, best_pitch, evade
 
 def median_bin(image, n):
     """
@@ -298,9 +302,9 @@ def main():
                         pitch_target = math.asin(normalized_direction[2])
                         yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                        best_yaw, best_pitch = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.2, alpha=1.05)
+                        best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.2, alpha=1.05)
 
-                        hist = vfh3d.histogram[10:25, 25:45][::-1, ::-1]*5
+                        hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
                         img = Image()
                         img.header.stamp = node.get_clock().now().to_msg()
                         img.height = hist.shape[0]
@@ -310,7 +314,7 @@ def main():
                         img.step = img.width
                         img.data = hist.astype(np.uint8).ravel()
                         hist_pub.publish(img)
-                        costs = vfh3d.costs[10:25, 25:45][::-1, ::-1]*10
+                        costs = vfh3d.costs[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*10
                         img.data = costs.astype(np.uint8).ravel()
                         cost_pub.publish(img)
 
@@ -318,7 +322,10 @@ def main():
                             avd_vel = (0, 0, 0)
                         else:
                             # Convert spherical coordinates to a 3D vector.
-                            x = math.cos(best_pitch) * math.cos(best_yaw)
+                            if evade:
+                                x = 0
+                            else:
+                                x = math.cos(best_pitch) * math.cos(best_yaw)
                             y = math.cos(best_pitch) * math.sin(best_yaw)
                             z = math.sin(best_pitch)
 
