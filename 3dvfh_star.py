@@ -287,44 +287,47 @@ def main():
                         # Transform the point
                         point_in_body = do_transform_point(tgt_p_map, transform)
 
-                        target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
-                        # Normalize the target direction.
-                        normalized_direction = target_direction / np.linalg.norm(target_direction)
-
-                        # Convert normalized direction to yaw and pitch.
-                        pitch_target = math.asin(normalized_direction[2])
-                        yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
-
-                        best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.5, alpha=1.05)
-
-                        hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
-                        img = Image()
-                        img.header.stamp = node.get_clock().now().to_msg()
-                        img.height = hist.shape[0]
-                        img.width = hist.shape[1]
-                        img.is_bigendian = 0
-                        img.encoding = "mono8"
-                        img.step = img.width
-                        img.data = hist.astype(np.uint8).ravel()
-                        hist_pub.publish(img)
-
-                        costs = vfh3d.costs[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*10
-                        img.data = costs.astype(np.uint8).ravel()
-                        cost_pub.publish(img)
-
-                        if best_yaw is None:
-                            avd_vel = (0, 0, 0)
-                            node.get_logger().warning('cannot avoid')
+                        if point_in_body.point.x ** 2 + point_in_body.point.y ** 2 + point_in_body.point.z ** 2 < 1:
+                            avd_vel = (0.0, 0.0, 0.0)
                         else:
-                            # Convert spherical coordinates to a 3D vector.
-                            y = math.cos(best_pitch) * math.sin(best_yaw)
-                            z = math.sin(best_pitch)
-                            if evade:
-                                v = np.array([0, y, z])
-                                avd_vel = v / np.linalg.norm(v) * 0.5
+                            target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
+                            # Normalize the target direction.
+                            normalized_direction = target_direction / np.linalg.norm(target_direction)
+
+                            # Convert normalized direction to yaw and pitch.
+                            pitch_target = math.asin(normalized_direction[2])
+                            yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
+
+                            best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.5, alpha=1.05)
+
+                            hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
+                            img = Image()
+                            img.header.stamp = node.get_clock().now().to_msg()
+                            img.height = hist.shape[0]
+                            img.width = hist.shape[1]
+                            img.is_bigendian = 0
+                            img.encoding = "mono8"
+                            img.step = img.width
+                            img.data = hist.astype(np.uint8).ravel()
+                            hist_pub.publish(img)
+
+                            costs = vfh3d.costs[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*10
+                            img.data = costs.astype(np.uint8).ravel()
+                            cost_pub.publish(img)
+
+                            if best_yaw is None:
+                                avd_vel = (0.0, 0.0, 0.0)
+                                node.get_logger().warning('cannot find avoid vector')
                             else:
-                                x = math.cos(best_pitch) * math.cos(best_yaw)
-                                avd_vel = np.array([x, y, z])
+                                # Convert spherical coordinates to a 3D vector.
+                                y = math.cos(best_pitch) * math.sin(best_yaw)
+                                z = math.sin(best_pitch)
+                                if evade:
+                                    v = np.array((0.0, y, z))
+                                    avd_vel = v / np.linalg.norm(v)
+                                else:
+                                    x = math.cos(best_pitch) * math.cos(best_yaw)
+                                    avd_vel = (x, y, z)
                         m = TwistStamped()
                         m.header.frame_id = "body"
                         m.header.stamp = node.get_clock().now().to_msg()
