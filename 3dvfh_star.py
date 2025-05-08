@@ -93,9 +93,9 @@ class VFH3D:
         # Accumulate magnitudes into the histogram
         np.add.at(self.histogram, (pitch_bin, yaw_bin), magnitude)
 
+        #print(np.max(self.histogram[self.pitch_min_bin:self.pitch_max_bin+1,self.yaw_min_bin:self.yaw_max_bin+1]))
         evade = False
-        #print(self.histogram[17:19,34:38])
-        if (np.max(self.histogram[17:19,34:38]) > 200):
+        if (np.max(self.histogram[self.pitch_min_bin:self.pitch_max_bin+1,self.yaw_min_bin:self.yaw_max_bin+1]) > 150):
             evade = True
         # 2. Polar Histogram Reduction (occupied)
 #        to_inflates = []
@@ -125,13 +125,6 @@ class VFH3D:
         for yaw_bin in range(self.yaw_min_bin, self.yaw_max_bin+1):
             for pitch_bin in range(self.pitch_min_bin, self.pitch_max_bin+1):  # Restrict pitch_bin to the specified range
                 if self.occupied_memory[pitch_bin, yaw_bin] < 1:
-                #if not occupied[pitch_bin, yaw_bin]:
-                    # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
-                    #cost = histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
-
-                    # Favor previous yaw by adding a penalty for deviation from prv_yaw
-                    #cost = cost + prv_weight * math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
-
                     cost = self.histogram[pitch_bin, yaw_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2) + math.sqrt((yaw_bin - prv_yaw_bin)**2 + (pitch_bin - prv_pitch_bin)**2)
                     if self.histogram[pitch_bin-1, yaw_bin] < 5 and self.histogram[pitch_bin+1, yaw_bin] < 5 or self.histogram[pitch_bin, yaw_bin-1] < 5 and self.histogram[pitch_bin, yaw_bin+1] < 5:
                         cost = cost * 0.5
@@ -144,7 +137,7 @@ class VFH3D:
         #print(min_cost)
 
         if math.isinf(min_cost):
-            return None, None
+            return None, None, None
 
         # Convert back to radians.
         best_yaw = math.radians(best_yaw_bin * self.bin_size - 180 + self.bin_size / 2)
@@ -302,7 +295,7 @@ def main():
                         pitch_target = math.asin(normalized_direction[2])
                         yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                        best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.2, alpha=1.05)
+                        best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.5, alpha=1.05)
 
                         hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
                         img = Image()
@@ -314,26 +307,24 @@ def main():
                         img.step = img.width
                         img.data = hist.astype(np.uint8).ravel()
                         hist_pub.publish(img)
+
                         costs = vfh3d.costs[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*10
                         img.data = costs.astype(np.uint8).ravel()
                         cost_pub.publish(img)
 
                         if best_yaw is None:
                             avd_vel = (0, 0, 0)
+                            node.get_logger().warning('cannot avoid')
                         else:
                             # Convert spherical coordinates to a 3D vector.
-                            if evade:
-                                x = 0
-                            else:
-                                x = math.cos(best_pitch) * math.cos(best_yaw)
                             y = math.cos(best_pitch) * math.sin(best_yaw)
                             z = math.sin(best_pitch)
-
-                            # Normalize the vector.
-                            #v = np.array([x, y, z])
-                            #avd_dir = v / np.linalg.norm(v)
-
-                            avd_vel = np.array([x, y, z])
+                            if evade:
+                                v = np.array([0, y, z])
+                                avd_vel = v / np.linalg.norm(v) * 0.5
+                            else:
+                                x = math.cos(best_pitch) * math.cos(best_yaw)
+                                avd_vel = np.array([x, y, z])
                         m = TwistStamped()
                         m.header.frame_id = "body"
                         m.header.stamp = node.get_clock().now().to_msg()
