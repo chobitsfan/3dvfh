@@ -12,6 +12,7 @@ from std_msgs.msg import Header
 from scipy import ndimage
 
 latest_obs = None
+disp_ts = None
 tgt_p_body = None
 
 class VFH3D:
@@ -95,8 +96,8 @@ class VFH3D:
 
         #print(np.max(self.histogram[self.pitch_min_bin:self.pitch_max_bin+1,self.yaw_min_bin:self.yaw_max_bin+1]))
         evade = False
-        if (np.max(self.histogram[self.pitch_min_bin:self.pitch_max_bin+1,self.yaw_min_bin:self.yaw_max_bin+1]) > 150):
-            evade = True
+        #if (np.max(self.histogram[self.pitch_min_bin:self.pitch_max_bin+1,self.yaw_min_bin:self.yaw_max_bin+1]) > 150):
+        #    evade = True
         # 2. Polar Histogram Reduction (occupied)
 #        to_inflates = []
 #        for yaw_bin in range(yaw_min_bin, yaw_max_bin):
@@ -197,7 +198,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
     # Avoid division by zero by masking invalid disparity values
     # ingnore any point 3m away
-    valid_mask = disparity > 100
+    valid_mask = disparity >= 24
 
     # Compute depth (Z)
     # 3bit subpixel disparity = 0.125
@@ -215,6 +216,8 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
 def disp_callback(img_msg):
     global latest_obs
+    global disp_ts
+    disp_ts = img_msg.header.stamp
     n=5
     binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
     latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
@@ -251,7 +254,7 @@ def main():
             if latest_obs is not None:
                 header = Header()
                 header.frame_id = "body"
-                header.stamp = node.get_clock().now().to_msg()
+                header.stamp = disp_ts
                 pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
                 if tgt_p_body is not None:
                     if tgt_p_body.point.x == 0 and tgt_p_body.point.y == 0 and tgt_p_body.point.z == 0:
@@ -298,11 +301,11 @@ def main():
                             pitch_target = math.asin(normalized_direction[2])
                             yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                            best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=1.5, alpha=1.05)
+                            best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=5, alpha=1.05)
 
                             hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
                             img = Image()
-                            img.header.stamp = node.get_clock().now().to_msg()
+                            img.header.stamp = disp_ts
                             img.height = hist.shape[0]
                             img.width = hist.shape[1]
                             img.is_bigendian = 0
@@ -317,7 +320,7 @@ def main():
 
                             if best_yaw is None:
                                 avd_vel = (0.0, 0.0, 0.0)
-                                node.get_logger().warning('cannot find avoid vector')
+                                node.get_logger().warning('cannot find avoid vector', throttle_duration_sec = 0.1)
                             else:
                                 # Convert spherical coordinates to a 3D vector.
                                 y = math.cos(best_pitch) * math.sin(best_yaw)
@@ -327,10 +330,10 @@ def main():
                                     avd_vel = v / np.linalg.norm(v)
                                 else:
                                     x = math.cos(best_pitch) * math.cos(best_yaw)
-                                    avd_vel = (x, y, z)
+                                    avd_vel = (x * 5, y * 5, z * 5)
                         m = TwistStamped()
                         m.header.frame_id = "body"
-                        m.header.stamp = node.get_clock().now().to_msg()
+                        m.header.stamp = disp_ts
                         m.twist.linear.x = avd_vel[0]
                         m.twist.linear.y = avd_vel[1]
                         m.twist.linear.z = avd_vel[2]
