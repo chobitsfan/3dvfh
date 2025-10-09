@@ -197,8 +197,8 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
     x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
 
     # Avoid division by zero by masking invalid disparity values
-    # ingnore any point 3m away
-    valid_mask = disparity >= 24
+    # ingnore any point too far away
+    valid_mask = disparity >= 40
 
     # Compute depth (Z)
     # 3bit subpixel disparity = 0.125
@@ -243,6 +243,7 @@ def main():
     avd_pub = node.create_publisher(TwistStamped, "avoid_direction", best_effort_qos)
     hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
     cost_pub = node.create_publisher(Image, "cost", best_effort_qos)
+    tgt_dir_pub = node.create_publisher(TwistStamped, "target_direction", best_effort_qos)
     disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
     tgt_point_sub = node.create_subscription(PointStamped, "target_point", tgt_point_callback, qos_profile=best_effort_qos)
 
@@ -296,6 +297,14 @@ def main():
                             target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
                             # Normalize the target direction.
                             normalized_direction = target_direction / np.linalg.norm(target_direction)
+
+                            m = TwistStamped()
+                            m.header.frame_id = "body"
+                            m.header.stamp = disp_ts
+                            m.twist.linear.x = normalized_direction[0]
+                            m.twist.linear.y = normalized_direction[1]
+                            m.twist.linear.z = normalized_direction[2]
+                            tgt_dir_pub.publish(m)
 
                             # Convert normalized direction to yaw and pitch.
                             pitch_target = math.asin(normalized_direction[2])
