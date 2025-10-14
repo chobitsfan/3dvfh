@@ -56,7 +56,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
     # Avoid division by zero by masking invalid disparity values
     # ingnore any point 3m away
-    valid_mask = disparity > 90
+    valid_mask = disparity >= 24
 
     # Compute depth (Z)
     Z = np.zeros_like(disparity, dtype=np.float32)
@@ -78,19 +78,19 @@ def disp_callback(img_msg):
     #print(binned.shape, binned.dtype)
     p_3d = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
     header = Header()
-    header.frame_id = "map"
-    header.stamp = node.get_clock().now().to_msg()
+    header.frame_id = "body"
+    header.stamp = img_msg.header.stamp
     pc_pub.publish(point_cloud2.create_cloud_xyz32(header, p_3d))
 
-    img = Image()
-    img.header = header
-    img.height = 480 // n
-    img.width = 640 // n
-    img.is_bigendian = 0
-    img.encoding = "mono8"
-    img.step = img.width
-    img.data = binned.astype(np.uint8).ravel()
-    img_pub.publish(img)
+#    img = Image()
+#    img.header = header
+#    img.height = 480 // n
+#    img.width = 640 // n
+#    img.is_bigendian = 0
+#    img.encoding = "mono8"
+#    img.step = img.width
+#    img.data = binned.astype(np.uint8).ravel()
+#    img_pub.publish(img)
 
 rclpy.init()
 node = rclpy.create_node('disp_pc')
@@ -98,7 +98,7 @@ node = rclpy.create_node('disp_pc')
 best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
 pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
 disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
-img_pub = node.create_publisher(Image, "binned", best_effort_qos)
+#img_pub = node.create_publisher(Image, "binned", best_effort_qos)
 
 while rclpy.ok():
     try:
