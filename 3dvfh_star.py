@@ -1,3 +1,9 @@
+# Yuan-Chu Tai
+# This is a simplified implementation of:
+# Baumann, Tanja. "Obstacle Avoidance for Drones Using a 3DVFH* Algorithm." Master's thesis, Eidgenössische Technische Hochschule Zürich, 2018.
+# Some parts of this project were developed with assistance from AI-based coding tools (such as ChatGPT, Gemini, Copilot, Claude).
+# Some parts of this project were contributed by Ludovic Angot.
+
 import rclpy, math
 import numpy as np
 from rclpy.node import Node
