@@ -183,7 +183,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
     Converts a disparity image to 3D points using NumPy.
 
     Args:
-        disparity (numpy.ndarray): Disparity image (2D array).
+        disparity (numpy.ndarray): Disparity image with 3 subpixel fractional bits (2D array). 
         f (float): Focal length of the camera.
         B (float): Baseline (distance between the stereo cameras).
         cx (float): Principal point x-coordinate.
@@ -207,7 +207,7 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
     valid_mask = disparity >= 40
 
     # Compute depth (Z)
-    # 3bit subpixel disparity = 0.125
+    # multuply dispaity value by 0.125 because of 3 subpixel fractional bits
     Z = np.zeros_like(disparity, dtype=np.float32)
     Z[valid_mask] = (f * B) / (disparity[valid_mask] * 0.125 / n)
 
