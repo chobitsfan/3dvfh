@@ -247,6 +247,7 @@ def main():
     disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
     tgt_point_sub = node.create_subscription(PointStamped, "target_point", tgt_point_callback, qos_profile=best_effort_qos)
 
+    speed_mps = 2
     vfh3d = VFH3D(5)
 
     while rclpy.ok():
@@ -310,7 +311,7 @@ def main():
                             pitch_target = math.asin(normalized_direction[2])
                             yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
 
-                            best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=5, alpha=1.05)
+                            best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=2, alpha=1.05)
 
                             hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
                             img = Image()
@@ -339,7 +340,7 @@ def main():
                                     avd_vel = v / np.linalg.norm(v)
                                 else:
                                     x = math.cos(best_pitch) * math.cos(best_yaw)
-                                    avd_vel = (x * 5, y * 5, z * 5)
+                                    avd_vel = (x * speed_mps, y * speed_mps, z * speed_mps)
                         m = TwistStamped()
                         m.header.frame_id = "body"
                         m.header.stamp = disp_ts
