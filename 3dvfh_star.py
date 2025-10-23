@@ -11,10 +11,6 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from scipy import ndimage
 
-latest_obs = None
-disp_ts = None
-tgt_p_body = None
-
 class VFH3D:
     def __init__(self, bin_size):
         self.bin_size = bin_size
@@ -214,145 +210,81 @@ def disparity_to_3d(disparity, f, B, cx, cy, n):
 
     return points_3d
 
-def disp_callback(img_msg):
-    global latest_obs
-    global disp_ts
-    disp_ts = img_msg.header.stamp
-    n=5
-    binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
-    latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
+class ObsAvdNode(Node):
+    def __init__(self):
+        super().__init__('obs_avd')
+        best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.VOLATILE)
+        self.pc_pub = self.create_publisher(PointCloud2, "obstacles", best_effort_qos)
+        self.avd_pub = self.create_publisher(TwistStamped, "avoid_direction", best_effort_qos)
+        self.hist_pub = self.create_publisher(Image, "histogram", best_effort_qos)
+        self.cost_pub = self.create_publisher(Image, "cost", best_effort_qos)
+        self.disp_sub = self.create_subscription(Image, "disparity", self.disp_callback, qos_profile=best_effort_qos)
+        self.tgt_dir_sub = self.create_subscription(TwistStamped, "target_direction", self.tgt_dir_callback, qos_profile=best_effort_qos)
+        self.speed_mps = 2
+        self.vfh3d = VFH3D(5)
+        self.tgt_dir = (1, 0, 0)
 
-def tgt_point_callback(p_msg):
-    global tgt_p_body
-    tgt_p_body = p_msg
+    def disp_callback(self, img_msg):
+        disp_ts = img_msg.header.stamp
+        n=5
+        binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
+        latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
+        header = Header()
+        header.frame_id = "body"
+        header.stamp = disp_ts
+        self.pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
+
+        # Convert normalized direction to yaw and pitch.
+        pitch_target = math.asin(self.tgt_dir[2])
+        yaw_target = math.atan2(self.tgt_dir[1], self.tgt_dir[0])
+
+        best_yaw, best_pitch, evade = self.vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=2, alpha=1.05)
+
+        hist = self.vfh3d.histogram[self.vfh3d.pitch_min_bin:self.vfh3d.pitch_max_bin+1, self.vfh3d.yaw_min_bin:self.vfh3d.yaw_max_bin+1][::-1, ::-1]*5
+        img = Image()
+        img.header.stamp = disp_ts
+        img.height = hist.shape[0]
+        img.width = hist.shape[1]
+        img.is_bigendian = 0
+        img.encoding = "mono8"
+        img.step = img.width
+        img.data = hist.astype(np.uint8).ravel()
+        self.hist_pub.publish(img)
+
+        costs = self.vfh3d.costs[self.vfh3d.pitch_min_bin:self.vfh3d.pitch_max_bin+1, self.vfh3d.yaw_min_bin:self.vfh3d.yaw_max_bin+1][::-1, ::-1]*10
+        img.data = costs.astype(np.uint8).ravel()
+        self.cost_pub.publish(img)
+
+        if best_yaw is None:
+            avd_vel = (0.0, 0.0, 0.0)
+            self.get_logger().warning('cannot find avoid vector', throttle_duration_sec = 0.1)
+        else:
+            # Convert spherical coordinates to a 3D vector.
+            y = math.cos(best_pitch) * math.sin(best_yaw)
+            z = math.sin(best_pitch)
+            if evade:
+                v = np.array((0.0, y, z))
+                avd_vel = v / np.linalg.norm(v)
+            else:
+                x = math.cos(best_pitch) * math.cos(best_yaw)
+                avd_vel = (x * self.speed_mps, y * self.speed_mps, z * self.speed_mps)
+
+        m = TwistStamped()
+        m.header.frame_id = "body"
+        m.header.stamp = disp_ts
+        m.twist.linear.x = avd_vel[0]
+        m.twist.linear.y = avd_vel[1]
+        m.twist.linear.z = avd_vel[2]
+        self.avd_pub.publish(m)
+
+    def tgt_dir_callback(self, twist_msg):
+        self.tgt_dir = (twist_msg.twist.linear.x, twist_msg.twist.linear.y, twist_msg.twist.linear.z)
 
 def main():
-    global latest_obs
-    global tgt_p_body
     rclpy.init()
-    node = rclpy.create_node('obs_avd')
-
-    tgt_p_map = None
-
-    # Create a TF2 buffer and listener
-    tf_buffer = Buffer()
-    tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
-
-    best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.VOLATILE)
-    pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
-    avd_pub = node.create_publisher(TwistStamped, "avoid_direction", best_effort_qos)
-    hist_pub = node.create_publisher(Image, "histogram", best_effort_qos)
-    cost_pub = node.create_publisher(Image, "cost", best_effort_qos)
-    tgt_dir_pub = node.create_publisher(TwistStamped, "target_direction", best_effort_qos)
-    disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
-    tgt_point_sub = node.create_subscription(PointStamped, "target_point", tgt_point_callback, qos_profile=best_effort_qos)
-
-    speed_mps = 2
-    vfh3d = VFH3D(5)
-
-    while rclpy.ok():
-        try:
-            rclpy.spin_once(node)
-            if latest_obs is not None:
-                header = Header()
-                header.frame_id = "body"
-                header.stamp = disp_ts
-                pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
-                if tgt_p_body is not None:
-                    if tgt_p_body.point.x == 0 and tgt_p_body.point.y == 0 and tgt_p_body.point.z == 0:
-                        tgt_p_map = None
-                        tgt_p_body = None
-                        vfh3d.reset()
-                    else:
-                        try:
-                            transform = tf_buffer.lookup_transform(
-                                "map",  # Target frame
-                                "body",   # Source frame
-                                rclpy.time.Time(),  # Use the latest available transform
-                                timeout=rclpy.duration.Duration(seconds=0.0)
-                            )
-                        except Exception as e:
-                            pass
-                        else:
-                            tgt_p_map = do_transform_point(tgt_p_body, transform)
-                            tgt_p_body = None
-                if tgt_p_map is not None:
-                    try:
-                        # Lookup the transform from "map" to "body"
-                        transform = tf_buffer.lookup_transform(
-                            "body",  # Target frame
-                            "map",   # Source frame
-                            rclpy.time.Time(),  # Use the latest available transform
-                            timeout=rclpy.duration.Duration(seconds=0.0)
-                        )
-                    except Exception as e:
-                        #print(e)
-                        pass
-                    else:
-                        # Transform the point
-                        point_in_body = do_transform_point(tgt_p_map, transform)
-
-                        if point_in_body.point.x ** 2 + point_in_body.point.y ** 2 + point_in_body.point.z ** 2 < 1:
-                            avd_vel = (0.0, 0.0, 0.0)
-                        else:
-                            target_direction = np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z])
-                            # Normalize the target direction.
-                            normalized_direction = target_direction / np.linalg.norm(target_direction)
-
-                            m = TwistStamped()
-                            m.header.frame_id = "body"
-                            m.header.stamp = disp_ts
-                            m.twist.linear.x = normalized_direction[0]
-                            m.twist.linear.y = normalized_direction[1]
-                            m.twist.linear.z = normalized_direction[2]
-                            tgt_dir_pub.publish(m)
-
-                            # Convert normalized direction to yaw and pitch.
-                            pitch_target = math.asin(normalized_direction[2])
-                            yaw_target = math.atan2(normalized_direction[1], normalized_direction[0])
-
-                            best_yaw, best_pitch, evade = vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=2, alpha=1.05)
-
-                            hist = vfh3d.histogram[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*5
-                            img = Image()
-                            img.header.stamp = disp_ts
-                            img.height = hist.shape[0]
-                            img.width = hist.shape[1]
-                            img.is_bigendian = 0
-                            img.encoding = "mono8"
-                            img.step = img.width
-                            img.data = hist.astype(np.uint8).ravel()
-                            hist_pub.publish(img)
-
-                            costs = vfh3d.costs[vfh3d.pitch_min_bin:vfh3d.pitch_max_bin+1, vfh3d.yaw_min_bin:vfh3d.yaw_max_bin+1][::-1, ::-1]*10
-                            img.data = costs.astype(np.uint8).ravel()
-                            cost_pub.publish(img)
-
-                            if best_yaw is None:
-                                avd_vel = (0.0, 0.0, 0.0)
-                                node.get_logger().warning('cannot find avoid vector', throttle_duration_sec = 0.1)
-                            else:
-                                # Convert spherical coordinates to a 3D vector.
-                                y = math.cos(best_pitch) * math.sin(best_yaw)
-                                z = math.sin(best_pitch)
-                                if evade:
-                                    v = np.array((0.0, y, z))
-                                    avd_vel = v / np.linalg.norm(v)
-                                else:
-                                    x = math.cos(best_pitch) * math.cos(best_yaw)
-                                    avd_vel = (x * speed_mps, y * speed_mps, z * speed_mps)
-                        m = TwistStamped()
-                        m.header.frame_id = "body"
-                        m.header.stamp = disp_ts
-                        m.twist.linear.x = avd_vel[0]
-                        m.twist.linear.y = avd_vel[1]
-                        m.twist.linear.z = avd_vel[2]
-                        avd_pub.publish(m)
-
-                        latest_obs = None
-        except KeyboardInterrupt:
-            break
-    rclpy.try_shutdown()
+    obs_avd = ObsAvdNode()
+    rclpy.spin(obs_avd)
+    rclpy.shutdown()
     print("bye")
 
 if __name__ == '__main__':
