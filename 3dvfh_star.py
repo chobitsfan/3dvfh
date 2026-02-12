@@ -220,7 +220,7 @@ class ObsAvdNode(Node):
         self.cost_pub = self.create_publisher(Image, "cost", best_effort_qos)
         self.disp_sub = self.create_subscription(Image, "disparity", self.disp_callback, qos_profile=best_effort_qos)
         self.tgt_dir_sub = self.create_subscription(TwistStamped, "target_direction", self.tgt_dir_callback, qos_profile=best_effort_qos)
-        self.speed_mps = 2
+        self.speed_mps = 5
         self.vfh3d = VFH3D(5)
         self.tgt_dir = (1, 0, 0)
 
@@ -230,7 +230,7 @@ class ObsAvdNode(Node):
         binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
         latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
         header = Header()
-        header.frame_id = "body"
+        header.frame_id = "fc"
         header.stamp = disp_ts
         self.pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
 
@@ -238,7 +238,7 @@ class ObsAvdNode(Node):
         pitch_target = math.asin(self.tgt_dir[2])
         yaw_target = math.atan2(self.tgt_dir[1], self.tgt_dir[0])
 
-        best_yaw, best_pitch, evade = self.vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=2, alpha=1.05)
+        best_yaw, best_pitch, evade = self.vfh3d.target_direction(latest_obs, yaw_target, pitch_target, safety_distance=5, alpha=1.05)
 
         hist = self.vfh3d.histogram[self.vfh3d.pitch_min_bin:self.vfh3d.pitch_max_bin+1, self.vfh3d.yaw_min_bin:self.vfh3d.yaw_max_bin+1][::-1, ::-1]*5
         img = Image()
@@ -270,7 +270,7 @@ class ObsAvdNode(Node):
                 avd_vel = (x * self.speed_mps, y * self.speed_mps, z * self.speed_mps)
 
         m = TwistStamped()
-        m.header.frame_id = "body"
+        m.header.frame_id = "fc"
         m.header.stamp = disp_ts
         m.twist.linear.x = avd_vel[0]
         m.twist.linear.y = avd_vel[1]
